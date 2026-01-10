@@ -283,7 +283,7 @@ pc_filt
 Load daily SST and climatological threshold time series from Part. 2
 
 ``` r
-mhw_daily <- read.csv("./data/Daily_SST_p90_JJA_2015_2025_roi_bottom.csv", sep = ",", header = TRUE)
+mhw_daily <- read.csv("./data/Daily_SST_p90_JJA_2015_2025_roi_test.csv", sep = ",", header = TRUE)
 mhw_daily
 ```
 
@@ -1653,3 +1653,4 @@ ggplot(concept_data, aes(x = mhw_days, y = bloom_intensity)) +
 ```
 
 ![](korrelartion_mhw_pc_files/figure-commonmark/unnamed-chunk-10-1.png)
+
