@@ -1,0 +1,303 @@
+---
+title: "EnviroChange: statistical analysis of MHW and HAB"
+author: "Justin Lingg-Laham and Jonah van den Bos"
+format: gfm
+execute:
+  message: false
+  warning: false
+editor: visual
+---
+# Introduction
+EnviroChange: Marine Heatwaves – An overlooked driver of Baltic cyanobacteria blooms?
+Part 3: Statistical analysis of marine heatwaves and cyanobacterial bloom intensity
+
+This R script works on the post-processing, MHW event detection, and statistical
+analysis linking marine heatwaves (MHWs) to cyanobacterial bloom intensity (HABs)
+in the Baltic Sea.
+
+The primary goal is to assess whether MHWs act as a trigger or as an amplifying factor for HABs during summer months (June–August) between 2015 and 2025.
+
+Worksteps:
+1. Load and filter phycocyanin bloom metrics (monthly aggregates) (CSV from Code: Part. 1)
+2. Load daily SST and climatological threshold time series (CSV from Code: Part. 2)
+3. Detect marine heatwave events using the heatwaveR implementation (Hobday et al. 2016).
+4. Compare bloom intensity between months with and without MHW occurrence (Boxplot)
+5. Calculate correlation analyses between MHW duration and bloom intensity (Scatterplot)
+6. Generate figure for Presentation and Understanding.
+
+Key assumptions:
+- Key assumptions from Part 1 and 2
+- Analysis is restricted to summer months (June–August).
+- Marine heatwaves are detected from surface SST only.
+- Focus is on bloom intensity.
+
+# Preparation
+To ensure Reproducibility, it is crucial to understand that when the document is rendered, the working directory is automatically set to the folder in which it is located. Therefore, it is necessary to maintain the attached folder structure!
+The dataimport takes place via relative paths to be independent from lokal storage pathways from different Computersystems 
+
+```{r}
+getwd()
+```
+
+## Libraries
+The following Libraries are used to provide access to additional functions:
+
+```{r}
+library(dplyr)      # Package to manipulate Data (filter, summarise, etc. )
+library(tidyverse)  # Meta-package with more Functions (ggplot2 as example)
+library(lubridate)  # Package to work with dates 
+library(data.table) # Package to work with big datasets
+library(heatwaveR)  # Package for work with MHW
+library(ggplot2)    # Package to visualize data
+```
+
+# 1. Phycocyanin
+Load monthly phycocyanin bloom metrics from Part. 1
+
+```{r}
+phycocyanin <- read.csv("./data/S2_PC_monthly_JJA_2015_2025_roi_bottom.csv", sep = ",", header = TRUE)
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE)
+head(phycocyanin, 5)
+```
+
+## Phycocyanin-Filter
+apply quality filtering to retain reliable bloom observations
+
+```{r}
+pc_filt <- phycocyanin %>%
+  filter(
+    image_count >= 3,   # Keep only data with more then three Images per monthly Scene
+    bloom_fraction > 0, # exclude months without detected bloom-signal
+    !is.na(PC_mean),    # remove records with missing PC-statistics
+    !is.na(PC_p90)
+  )
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE)
+head(pc_filt, 5)
+```
+
+# 2. Marine Heatwave
+Load daily SST and climatological threshold time series from Part. 2
+
+```{r}
+mhw_daily <- read.csv("./data/Daily_SST_p90_JJA_2015_2025_roi_bottom.csv", sep = ",", header = TRUE)
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE)
+head(mhw_daily, 5)
+```
+
+# 3. MHW Detection (Hobday et al. 2016)
+Marine Heatwave-detection using the Package: HeatwaveR
+
+```{r}
+dat <- tibble(
+  t    = as.Date(mhw_daily$date),       # Daily timestamps
+  temp = mhw_daily$sst,                 # observed SST in °C
+  seas = mhw_daily$threshold            # climatologic threshold (90th percentile)
+)
+dat <- dat %>%
+  rename(thresh = seas) # rename treshold (to match heatwaveR naming convention)
+
+dat <- dat %>%
+  mutate(seas = thresh) #Duplicate threshold as seasonal climatology (required by                                detect_event)
+colnames(dat) # check on Column-names
+
+## Detect MHW events after Hobday et al. 2016 
+## Definition: ≥ 5 consecutive days with SST exceeding the threshold
+events <- detect_event(dat, minDuration = 5) 
+
+event_table <- events$event # extract detected events
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE)
+head(event_table, 5)
+
+## Derive annual marine heatwave characteristics
+yearly <- event_table %>%
+  mutate(year = year(date_start)) %>%
+  group_by(year) %>%
+  summarise(
+    n_events = n(),                            # Number of MHW events per year
+    mean_duration = mean(duration),            # Mean event duration (days)
+    max_intensity = max(intensity_max),        # Max event intensity
+    cum_intensity = sum(intensity_cumulative)  # cumulative annual intensity
+  )
+
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE)
+head(yearly, 5) 
+```
+
+# 4. Compare bloom intensity between months with and without MHW occurrence
+The Goal is to test whether cyanobacterial bloom intensity differs between summer months affected by marine heatwaves and those without MHWs
+
+```{r}
+# Aggregate marine heatwave characteristics to monthly scale
+# (Each month is classified by total MHW duration and intensity)
+mhw_monthly <- event_table %>%
+  mutate(
+    year  = year(date_start),  # Extract year from event start date
+    month = month(date_start)  # Extract month from event start date
+  ) %>%
+  group_by(year, month) %>%
+  summarise(
+    mhw_days = sum(duration),  # Total number of MHW days per month
+    cum_intensity = sum(intensity_cumulative), # Cumulative MHW intensity per month
+    .groups = "drop"
+  ) %>%
+  # classify months based on presence of MHW conditions
+  mutate(
+    mhw_present = ifelse(mhw_days > 0, "MHW month", "Without MHW")
+  )
+
+# Combination: monthly MHW with phycocyanin bloom data
+pc_mhw <- pc_filt %>%
+  left_join(mhw_monthly, by = c("year", "month")) %>%
+  # lable months without deteced MHW 
+  mutate(
+    mhw_present = ifelse(is.na(mhw_present), "Without MHW", mhw_present)
+  )
+
+# ## Set factor order for plotting (left: No MHW, right: MHW)
+pc_mhw$mhw_present <- factor(
+  pc_mhw$mhw_present,
+  levels = c("Without MHW", "MHW month")
+)
+
+# Visualization: Boxplot comparison of phycocyanin index between MHW and non-MHW months with ggplot2
+
+boxplot <- ggplot(pc_mhw, aes(x = mhw_present, y = PC_mean))+
+  geom_boxplot(
+    fill = "#d0e0e1", color = "black", outlier.shape = NA, width = 0.5) +
+  
+  geom_jitter( # jittered points to avoid overlaping Points
+    aes(color = mhw_present), width = 0.15, size = 2.5, alpha = 0.75) +
+  
+  scale_color_manual(values = c( "Without MHW"   = "#346a96", "MHW month" = "#355e73")) +
+  
+  labs(x = "", y = "Phycocyanin-Index [monthly mean]", title = "Phycocyanin-Index during summermonths (jun., jul., aug.) in the Baltic Sea \nwith and without marine heatwaves") +
+  
+  theme_minimal(base_size = 18) +
+  
+  theme(legend.position = "none", plot.title = element_text(size = 20, face = "bold"), axis.text.x = element_text(face = "bold"))
+print(boxplot)
+
+ggsave("figures/PC_Summer_MHW_500dpi.png", plot = boxplot, width=30, height=20, units="cm", dpi=500, bg="white")
+```
+
+# 5. Correlation: MHW duration and bloom intensity 
+The goal is to test whether the intensity of cyanobacterial blooms increases with the duration of marine heatwave conditions within a month.
+
+For correlation the Spearman rank correlation is used.
+
+```{r}
+# Monatliche MHW Tage zählen
+mhw_monthly_count <- dat %>%
+  mutate(is_mhw = temp > thresh) %>%                  # Binary MHW condition per day
+  group_by(year = year(t), month = month(t)) %>%      # Aggregate to monthly scale
+  summarise(mhw_days = sum(is_mhw), .groups = "drop")# Total number of MHW days per month
+
+# merge monthly MHW duration and filtered phycocyanin bloom metrics
+analysis_final <- pc_filt %>%
+  left_join(mhw_monthly_count, by = c("year", "month"))
+
+# Correlation: This test evaluates whether longer MHW durations are associated with higher cyanobacterial bloom intensity (PC 90th percentile)
+cor.test(analysis_final$mhw_days, analysis_final$PC_p90, method = "spearman")
+```
+
+## Visualize Correlation 
+
+```{r}
+p_final <- ggplot(analysis_final, aes(x = mhw_days, y = PC_p90)) +
+  annotate("text", x = 0, y = max(analysis_final$PC_p90, na.rm=TRUE) * 0.78, label = "Summermonths without MHW", angle = 90, color = "#4A6A8A", fontface = "italic", size = 4.5)  +
+
+  geom_smooth(method = "lm", color = "#355e73", fill = "#d0e0e1", alpha = 0.4, linewidth = 1) + # Trendline
+  annotate("rect", xmin = -0.5, xmax = 0.5, ymin = -Inf, ymax = Inf, fill = "#346a96", alpha = 0.5)+
+  
+  geom_point(color = "#355e73", size = 3, alpha = 0.6)+
+
+  labs(title = "Correlation between marine heatwave duration and cyanobacterial bloom Intensity in the Baltic Sea \nduring summermonths (jun., jul., aug.) in research period (2015-2025)", 
+    subtitle = "blue bar serves as baseline comparison",
+    x = "Duration of MHW conditions [Days per month]",
+    y = "Peak phycocyanin concentration\n[Phycocyanin 90th percentile]") +
+  
+  scale_x_continuous(breaks = seq(0, max(analysis_final$mhw_days, na.rm=TRUE), by = 5)) +
+
+  theme_minimal(base_size = 14) +
+  
+  theme(plot.title = element_text(face = "bold", size = 20),
+    plot.subtitle = element_text(color = "grey40", face = "italic"),
+    panel.grid.minor = element_blank(),
+    axis.title.y = element_text(margin = margin(r = 18)),
+    axis.title.x = element_text(margin = margin(t = 18))
+  )+
+  annotate("label", x = max(analysis_final$mhw_days, na.rm =TRUE),y = min(analysis_final$PC_p90, na.rm = TRUE), label = "p < 0.05\nn=30", hjust = 1.1, vjust = -0.5, fill = "white", alpha = 0.9)
+
+print(p_final)
+
+ggsave("figures/MHW_vs_AlgalIntensity.png", plot = p_final, width=30, height=20, units="cm", dpi=500, bg="white")
+```
+
+# 6. Generate figure for Presentation and Understanding
+
+```{r}
+library(ggplot2)
+
+concept_data <- data.frame(
+  mhw_days = c(0, 5, 10, 20, 30),
+  bloom_intensity = c(3, 3.2, 4, 6, 9)
+)
+
+ggplot(concept_data, aes(x = mhw_days, y = bloom_intensity)) +
+  annotate(
+    "rect",
+    xmin = -Inf, xmax = 8,
+    ymin = -Inf, ymax = Inf,
+    fill = "#d0e0e1", alpha = 0.6
+  ) +
+  annotate(
+    "rect",
+    xmin = 8, xmax = Inf,
+    ymin = -Inf, ymax = Inf,
+    fill = "#346a96", alpha = 0.15
+  ) +
+  geom_line(
+    color = "#355e73",
+    linewidth = 1.2
+  ) +
+  geom_point(
+    size = 4,
+    color = "#355e73"
+  ) +
+  annotate(
+    "text",
+    x = 3, y = 9,
+    label = "Bloom initiation\n(no or short MHW)",
+    size = 5,
+    fontface = "bold"
+  ) +
+  annotate(
+    "text",
+    x = 20, y = 9,
+    label = "Bloom amplification\n(prolonged MHW)",
+    size = 5,
+    fontface = "bold",
+    color = "#355e73"
+  ) +
+  
+  annotate(
+    "text",
+    x = 15, y = 2,
+    label = "Trigger ≠ Amplifier",
+    size = 5,
+    fontface = "italic"
+  ) +
+  
+  labs(
+    title = "Conceptual model: Marine heatwaves amplify cyanobacterial blooms",
+    x = "Marine heatwave duration",
+    y = "Bloom intensity (phycocyanin)"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold")
+  )
+
+```
